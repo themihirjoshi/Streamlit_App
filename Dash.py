@@ -32,7 +32,7 @@ INDEX_URLS = {
     "Nifty Energy":            "https://www.screener.in/company/CNXENERGY/#constituents",
     "Nifty PSE":               "https://www.screener.in/company/CNXPSE/#constituents",
     "Nifty Consumption":       "https://www.screener.in/company/CNXCONSUMPTION/#constituents",
-    "Nifty Infrastructure":    "https://www.screener.in/company/CNXINFRA/#constituents",
+    "Nifty Infrastructure":    "https://www.screener.in/company/CNXINFRAST/#constituents",
     "Nifty MNC":               "https://www.screener.in/company/CNXMNC/#constituents",
     "Nifty Private Bank":      "https://www.screener.in/company/NIFPVTBANK/#constituents",
     "Nifty PSU Bank":          "https://www.screener.in/company/CNXPSUBANK/#constituents",
@@ -490,3 +490,4 @@ if go:
         st.dataframe(snap.sort_values("Weight%", ascending=False), use_container_width=True)
         csv = snap.to_csv(index=False).encode()
         st.download_button("Download snapshot CSV", csv, file_name="snapshot.csv", mime="text/csv")
+
