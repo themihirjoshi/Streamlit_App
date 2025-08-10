@@ -172,15 +172,21 @@ def index_health_summary(index_or_url: str, days=365, span=200):
     total_mcap = cons2["MktCapCr"].sum(skipna=True)
     weights = (cons2.set_index("Yahoo")["MktCapCr"] / max(total_mcap, 1e-9)).reindex(close_wide.columns).fillna(0.0)
 
+    # Breadth now
     eq_breadth_now = above_now.mean() * 100.0
     cap_breadth_now = (weights * above_now.astype(float)).sum() * 100.0
-    cap_avg_dist_now = (weights * dist_pct.reindex(weights.index)).sum()
 
+    # Avg distance vs 200EMA
+    cap_avg_dist_now = (weights * dist_pct.reindex(weights.index)).sum()
+    eq_avg_dist_now  = float(dist_pct.mean())
+
+    # Returns
     look = 252 if len(close_wide) > 252 else max(20, len(close_wide)-1)
     base = close_wide.iloc[-look]; ret_1y = (last_close / base - 1.0)
     eq_ret_1y = ret_1y.mean() * 100.0
     cap_ret_1y = (weights * ret_1y).sum() * 100.0
 
+    # 3m ago breadth
     look_3m = min(63, len(close_wide)-1)
     past_idx = -look_3m
     above_3m = (close_wide.iloc[past_idx] > ema_w.iloc[past_idx])
@@ -190,6 +196,7 @@ def index_health_summary(index_or_url: str, days=365, span=200):
     return {
         "eq_breadth_now_%": float(eq_breadth_now),
         "cap_breadth_now_%": float(cap_breadth_now),
+        "eq_avg_dist_now_%vsEMA": float(eq_avg_dist_now),
         "cap_avg_dist_now_%vsEMA": float(cap_avg_dist_now),
         "eq_ret_1y_%": float(eq_ret_1y),
         "cap_ret_1y_%": float(cap_ret_1y),
@@ -204,21 +211,41 @@ def index_health_summary(index_or_url: str, days=365, span=200):
         "cons": cons2
     }
 
-def sustainability_score_v2(summary):
-    if not summary or "error" in summary: return {"score": float("nan"), "label": "N/A", "why": "no data"}
-    b_eq = summary["eq_breadth_now_%"]; b_cap = summary["cap_breadth_now_%"]
-    b_eq_3m = summary["eq_breadth_3mago_%"]; b_cap_3m = summary["cap_breadth_3mago_%"]
-    dist = summary["cap_avg_dist_now_%vsEMA"]; ret1y = summary["cap_ret_1y_%"]
-    breadth_now = 0.6*b_cap + 0.4*b_eq
+def sustainability_score_v2(summary, mode: str = "hybrid"):
+    """
+    mode: 'hybrid' (60% cap + 40% eq), 'cap', or 'equal'
+    """
+    if not summary or "error" in summary:
+        return {"score": float("nan"), "label": "N/A", "why": "no data"}
+
+    if mode == "cap":
+        breadth_now = summary["cap_breadth_now_%"]
+        breadth_3m  = summary["cap_breadth_3mago_%"]
+        dist        = summary["cap_avg_dist_now_%vsEMA"]
+        ret1y       = summary["cap_ret_1y_%"]
+        tag = "Cap-weight"
+    elif mode == "equal":
+        breadth_now = summary["eq_breadth_now_%"]
+        breadth_3m  = summary["eq_breadth_3mago_%"]
+        dist        = summary["eq_avg_dist_now_%vsEMA"]
+        ret1y       = summary["eq_ret_1y_%"]
+        tag = "Equal-weight"
+    else:
+        b_eq = summary["eq_breadth_now_%"]; b_cap = summary["cap_breadth_now_%"]
+        b_eq_3m = summary["eq_breadth_3mago_%"]; b_cap_3m = summary["cap_breadth_3mago_%"]
+        dist = 0.6*summary["cap_avg_dist_now_%vsEMA"] + 0.4*summary["eq_avg_dist_now_%vsEMA"]
+        ret1y = 0.6*summary["cap_ret_1y_%"] + 0.4*summary["eq_ret_1y_%"]
+        breadth_now = 0.6*b_cap + 0.4*b_eq
+        breadth_3m  = 0.6*b_cap_3m + 0.4*b_eq_3m
+        tag = "Hybrid 60/40"
+
     comp1 = breadth_now
-    breadth_3m = 0.6*b_cap_3m + 0.4*b_eq_3m
-    comp2 = np.clip((breadth_now - breadth_3m + 20)/40*100, 0, 100)
-    comp3 = (np.tanh(dist/5.0)+1)/2 * 100
-    comp4 = np.clip((ret1y + 20)/40*100, 0, 100)
-    score = 0.50*comp1 + 0.20*comp2 + 0.15*comp3 + 0.15*comp4
-    score = float(np.clip(score, 0, 100))
+    comp2 = float(np.clip((breadth_now - breadth_3m + 20)/40*100, 0, 100))
+    comp3 = float((np.tanh(dist/5.0)+1)/2 * 100)
+    comp4 = float(np.clip((ret1y + 20)/40*100, 0, 100))
+    score = float(np.clip(0.50*comp1 + 0.20*comp2 + 0.15*comp3 + 0.15*comp4, 0, 100))
     label = "Broad & strong" if score>=75 else "Constructive" if score>=60 else "Mixed/fragile" if score>=40 else "Weak/narrow"
-    why = f"breadth {breadth_now:.0f}%, Δbreadth {breadth_now-breadth_3m:+.0f}pp, dist {dist:+.1f}% vs 200EMA, 1y {ret1y:+.1f}%"
+    why = f"{tag} — breadth {breadth_now:.0f}%, Δbreadth {breadth_now-breadth_3m:+.0f}pp, dist {dist:+.1f}%, 1y {ret1y:+.1f}%"
     return {"score": score, "label": label, "why": why}
 
 # ---------------- Extra visuals ----------------
@@ -279,7 +306,8 @@ def fig_health_summary(summary, score_dict):
     axes[0,0].bar(["Cap Now","Cap 3m"], [summary["cap_breadth_now_%"], summary["cap_breadth_3mago_%"]], alpha=0.85, label="Cap-weight")
     axes[0,0].set_ylim(0,100); axes[0,0].set_ylabel("Breadth (%)"); axes[0,0].legend(); axes[0,0].set_title("Breadth Now vs 3m Ago")
 
-    axes[0,1].barh(["Cap Avg Dist"], [summary["cap_avg_dist_now_%vsEMA"]], alpha=0.85); axes[0,1].axvline(0, linestyle="--")
+    axes[0,1].barh(["Cap Avg Dist","Eq Avg Dist"], [summary["cap_avg_dist_now_%vsEMA"], summary["eq_avg_dist_now_%vsEMA"]], alpha=0.85)
+    axes[0,1].axvline(0, linestyle="--")
     axes[0,1].set_xlabel("% vs 200-EMA"); axes[0,1].set_title("Distance from 200-EMA")
 
     axes[1,0].bar(["Equal-weight","Cap-weight"], [summary["eq_ret_1y_%"], summary["cap_ret_1y_%"]], alpha=0.85)
@@ -318,8 +346,68 @@ def fig_quadrant_and_windows(summary, windows, title="Sector Health — Quadrant
 
     axr = plt.subplot2grid((2,3),(1,1),colspan=2)
     axr.bar(x-w/2, eq_ret, w, label="Equal-weight"); axr.bar(x+w/2, cap_ret, w, label="Cap-weight")
-    axr.axhline(0, linestyle="--", alpha=0.6)
+    axr.axhline(0, linestyle="--")
     axr.set_xticks(x, labels); axr.set_ylabel("Return (%)"); axr.set_title("Returns by Window"); axr.legend()
+    return fig
+
+# -------- All-sectors summaries & plots --------
+@st.cache_data(ttl=1800, show_spinner=False)
+def summarize_many(indices: dict, days: int, span: int):
+    out = []
+    for name in indices.keys():
+        s = index_health_summary(name, days=days, span=span)
+        if "error" in s:
+            continue
+        out.append({
+            "Index": name,
+            "cap_now": s["cap_breadth_now_%"],
+            "eq_now":  s["eq_breadth_now_%"],
+            "cap_3m":  s["cap_breadth_3mago_%"],
+            "eq_3m":   s["eq_breadth_3mago_%"],
+            "n":       s["n_constituents_used"]
+        })
+    return pd.DataFrame(out).sort_values("Index")
+
+def fig_all_quadrant_cap_vs_eq(df: pd.DataFrame, title="All NSE sectors — Breadth Quadrant"):
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.set_xlim(0,100); ax.set_ylim(0,100)
+    ax.axvline(50, linestyle="--", alpha=0.6); ax.axhline(50, linestyle="--", alpha=0.6)
+    ax.set_xlabel("Cap-weight breadth (%)"); ax.set_ylabel("Equal-weight breadth (%)")
+    sizes = (df["n"].clip(lower=8, upper=120) ** 1.05) * 2.7
+    ax.scatter(df["cap_now"], df["eq_now"], s=sizes, alpha=0.85, linewidths=0.5)
+    for _, r in df.iterrows():
+        ax.text(r["cap_now"]+0.8, r["eq_now"]+0.8, r["Index"], fontsize=8)
+    ax.text(75,92,"Broad & strong",ha="center",fontsize=9)
+    ax.text(25,92,"Broad / weak leaders",ha="center",fontsize=9)
+    ax.text(75,8,"Narrow / strong leaders",ha="center",fontsize=9)
+    ax.text(25,8,"Weak & narrow",ha="center",fontsize=9)
+    return fig
+
+def fig_all_cap_only(df: pd.DataFrame, title="All sectors — Cap breadth (Now vs Δ3m)"):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.axhline(0, linestyle="--", alpha=0.6)
+    x, y = df["cap_now"], (df["cap_now"] - df["cap_3m"])
+    sizes = (df["n"].clip(8,120)**1.05)*2.7
+    ax.scatter(x, y, s=sizes, alpha=0.85, linewidths=0.5)
+    ax.set_xlim(0,100); ax.set_xlabel("Cap breadth now (%)")
+    ax.set_ylabel("Change vs 3m (pp)")
+    for _, r in df.iterrows():
+        ax.text(r["cap_now"]+0.8, (r["cap_now"]-r["cap_3m"])+0.8, r["Index"], fontsize=8)
+    return fig
+
+def fig_all_eq_only(df: pd.DataFrame, title="All sectors — Equal breadth (Now vs Δ3m)"):
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_title(title, fontsize=14, fontweight="bold")
+    ax.axhline(0, linestyle="--", alpha=0.6)
+    x, y = df["eq_now"], (df["eq_now"] - df["eq_3m"])
+    sizes = (df["n"].clip(8,120)**1.05)*2.7
+    ax.scatter(x, y, s=sizes, alpha=0.85, linewidths=0.5)
+    ax.set_xlim(0,100); ax.set_xlabel("Equal breadth now (%)")
+    ax.set_ylabel("Change vs 3m (pp)")
+    for _, r in df.iterrows():
+        ax.text(r["eq_now"]+0.8, (r["eq_now"]-r["eq_3m"])+0.8, r["Index"], fontsize=8)
     return fig
 
 # ---------------- UI ----------------
@@ -338,6 +426,10 @@ with col2:
 with col3:
     topk = st.number_input("Bubble: topk each side", 5, 999, 12, 1)
     focus = st.selectbox("Bubble ranking", ["abs_dist","weight"])
+    compare_all = st.checkbox("Compare all sectors", value=False)
+
+# Score basis switch
+basis = st.radio("Score basis", ["Hybrid 60/40", "Cap-weight only", "Equal-weight only"], horizontal=True)
 
 go = st.button("Run analysis", type="primary")
 
@@ -368,7 +460,9 @@ if go:
         st.pyplot(fig1, use_container_width=True)
 
         summary = index_health_summary(target, days=days, span=span)
-        score = sustainability_score_v2(summary)
+        mode = "hybrid" if basis.startswith("Hybrid") else ("cap" if basis.startswith("Cap") else "equal")
+        score = sustainability_score_v2(summary, mode=mode)
+
         st.subheader("Health Summary")
         st.write(f"**Score:** {score['score']:.1f} — {score['label']}  |  {score['why']}")
         st.pyplot(fig_health_summary(summary, score), use_container_width=True)
@@ -376,6 +470,21 @@ if go:
         windows = compute_time_windows(summary, span=span)
         st.pyplot(fig_quadrant_and_windows(summary, windows, title=f"{target} — Quadrant & Deterioration"),
                   use_container_width=True)
+
+        if compare_all:
+            st.subheader("All sectors — scatterviews")
+            df_all = summarize_many(INDEX_URLS, days=int(days), span=int(span))
+            tabs = st.tabs(["Cap vs Eq (quadrant)", "Cap-only (Now vs Δ3m)", "Equal-only (Now vs Δ3m)"])
+            with tabs[0]:
+                st.pyplot(fig_all_quadrant_cap_vs_eq(df_all), use_container_width=True)
+            with tabs[1]:
+                st.pyplot(fig_all_cap_only(df_all), use_container_width=True)
+            with tabs[2]:
+                st.pyplot(fig_all_eq_only(df_all), use_container_width=True)
+            st.dataframe(
+                df_all.rename(columns={"cap_now":"Cap now %","eq_now":"Eq now %","cap_3m":"Cap 3m %","eq_3m":"Eq 3m %","n":"# names"}),
+                use_container_width=True
+            )
 
         st.subheader("Constituent snapshot")
         st.dataframe(snap.sort_values("Weight%", ascending=False), use_container_width=True)
