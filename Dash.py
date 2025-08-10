@@ -491,3 +491,4 @@ if go:
         csv = snap.to_csv(index=False).encode()
         st.download_button("Download snapshot CSV", csv, file_name="snapshot.csv", mime="text/csv")
 
+
